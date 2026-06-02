@@ -73,10 +73,10 @@ TEST_CASE("FileHandle constructors", "[FileHandle]")
 
     SECTION("opening an existing file succeeds")
     {
-        TempFile tmp("hello");
-        FileHandle h(tmp.path.string(), "r");
+        TempFile tmp_file("hello");
+        FileHandle h(tmp_file.path.string(), "r");
         CHECK(h.is_open());
-        CHECK(h.get_filename() == tmp.path.string());
+        CHECK(h.get_filename() == tmp_file.path.string());
     }
 
     SECTION("opening a non-existent file throws ResourceError")
@@ -91,9 +91,9 @@ TEST_CASE("FileHandle open/close operations", "[FileHandle]")
 {
     SECTION("closing an open handle makes it not-open")
     {
-        TempFile tmp;
+        TempFile tmp_file;
         FileHandle h;
-        h.open(tmp.path.string(), "r");
+        h.open(tmp_file.path.string(), "r");
         REQUIRE(h.is_open());
         h.close();
         CHECK_FALSE(h.is_open());
@@ -108,14 +108,14 @@ TEST_CASE("FileHandle open/close operations", "[FileHandle]")
 
     SECTION("can reopen after close")
     {
-        TempFile tmp("content");
+        TempFile tmp_file("content");
         FileHandle h;
-        h.open(tmp.path.string(), "r");
+        h.open(tmp_file.path.string(), "r");
         REQUIRE(h.is_open());
         h.close();
         CHECK_FALSE(h.is_open());
 
-        h.open(tmp.path.string(), "r");
+        h.open(tmp_file.path.string(), "r");
         CHECK(h.is_open());
     }
 }
@@ -124,18 +124,12 @@ TEST_CASE("FileHandle open/close operations", "[FileHandle]")
 
 TEST_CASE("FileHandle read operations", "[FileHandle]")
 {
+    TempFile tmp_file("line1\nline2\nline3");
+
     SECTION("read_line returns the first line")
     {
-        TempFile tmp("hello world\nsecond line");
-        FileHandle h(tmp.path.string(), "r");
-        CHECK(h.read_line() == "hello world\n");
-    }
-
-    SECTION("read_line on an empty file returns empty string")
-    {
-        TempFile tmp("");
-        FileHandle h(tmp.path.string(), "r");
-        CHECK(h.read_line().empty());
+        FileHandle h(tmp_file.path.string(), "r");
+        CHECK(h.read_line() == "line1\n");
     }
 
     SECTION("read_line on a closed handle throws")
@@ -146,11 +140,21 @@ TEST_CASE("FileHandle read operations", "[FileHandle]")
 
     SECTION("successive read_line calls read multiple lines")
     {
-        TempFile tmp("line1\nline2\nline3");
-        FileHandle h(tmp.path.string(), "r");
+        FileHandle h(tmp_file.path.string(), "r");
         CHECK(h.read_line() == "line1\n");
         CHECK(h.read_line() == "line2\n");
         CHECK(h.read_line() == "line3");
+    }
+}
+
+TEST_CASE("FileHandle read operations on empty file", "[FileHandle]")
+{
+    TempFile empty_file("");
+
+    SECTION("read_line on an empty file returns empty string")
+    {
+        FileHandle h(empty_file.path.string(), "r");
+        CHECK(h.read_line().empty());
     }
 }
 
@@ -158,18 +162,18 @@ TEST_CASE("FileHandle read operations", "[FileHandle]")
 
 TEST_CASE("FileHandle open modes", "[FileHandle][mode]")
 {
-    TempFile tmp("test content");
+    TempFile tmp_file("test content");
 
     SECTION("read mode 'r'")
     {
-        FileHandle h(tmp.path.string(), "r");
+        FileHandle h(tmp_file.path.string(), "r");
         CHECK(h.is_open());
         CHECK(h.read_line() == "test content");
     }
 
     SECTION("write mode 'w' creates/truncates file")
     {
-        FileHandle h(tmp.path.string(), "w");
+        FileHandle h(tmp_file.path.string(), "w");
         CHECK(h.is_open());
         // В режиме записи нельзя читать
         CHECK_THROWS_AS(h.read_line(), ResourceError);
@@ -177,7 +181,7 @@ TEST_CASE("FileHandle open modes", "[FileHandle][mode]")
 
     SECTION("append mode 'a'")
     {
-        FileHandle h(tmp.path.string(), "a");
+        FileHandle h(tmp_file.path.string(), "a");
         CHECK(h.is_open());
     }
 }
@@ -187,13 +191,13 @@ TEST_CASE("FileHandle open modes", "[FileHandle][mode]")
 
 TEST_CASE("FileHandle move semantics", "[FileHandle][ownership]")
 {
-    TempFile tmp("data");
-    FileHandle a(tmp.path.string(), "r");
+    TempFile tmp_file("data");
+    FileHandle a(tmp_file.path.string(), "r");
     REQUIRE(a.is_open());
 
     FileHandle b(std::move(a));
 
-    CHECK_FALSE(a.is_open()); // После перемещения a больше не владеет ресурсом
+    CHECK_FALSE(a.is_open());
     CHECK(b.is_open());
     CHECK(b.read_line() == "data");
 }
@@ -203,12 +207,12 @@ TEST_CASE("FileHandle move semantics", "[FileHandle][ownership]")
 
 TEST_CASE("ResourceManager get_resource operations", "[ResourceManager]")
 {
-    TempFile tmp("content");
+    TempFile tmp_file("content");
 
     SECTION("get_resource returns a non-null handle")
     {
         ResourceManager mgr;
-        auto h = mgr.get_resource(tmp.path.string());
+        auto h = mgr.get_resource(tmp_file.path.string());
         CHECK(h != nullptr);
         CHECK(h->is_open());
     }
@@ -216,31 +220,26 @@ TEST_CASE("ResourceManager get_resource operations", "[ResourceManager]")
     SECTION("returns the same handle for the same path")
     {
         ResourceManager mgr;
-        auto h1 = mgr.get_resource(tmp.path.string());
-        auto h2 = mgr.get_resource(tmp.path.string());
+        auto h1 = mgr.get_resource(tmp_file.path.string());
+        auto h2 = mgr.get_resource(tmp_file.path.string());
         CHECK(h1.get() == h2.get());
     }
 
     SECTION("two handles from the same manager share the resource")
     {
-        // Для FILE* невозможно проверить через запись, так как режим только для
-        // чтения Создадим файл и проверим, что оба хендла указывают на один и тот
-        // же FILE*
-        TempFile tmp("original");
         ResourceManager mgr;
-        auto h1 = mgr.get_resource(tmp.path.string());
-        auto h2 = mgr.get_resource(tmp.path.string());
+        auto h1 = mgr.get_resource(tmp_file.path.string());
+        auto h2 = mgr.get_resource(tmp_file.path.string());
         CHECK(h1.get() == h2.get());
-        CHECK(h1->get() == h2->get()); // Один и тот же FILE*
+        CHECK(h1->get() == h2->get());
     }
 
     SECTION("different modes give different handles")
     {
-        TempFile tmp("hello");
+        TempFile tmp_file2("hello");
         ResourceManager mgr;
-        auto h1 = mgr.get_resource(tmp.path.string(), "r");
-        auto h2 = mgr.get_resource(tmp.path.string(), "w");
-        // В вашей реализации режим влияет на ключ, поэтому хендлы разные
+        auto h1 = mgr.get_resource(tmp_file2.path.string(), "r");
+        auto h2 = mgr.get_resource(tmp_file2.path.string(), "w");
         CHECK(h1.get() != h2.get());
     }
 }
@@ -249,23 +248,22 @@ TEST_CASE("ResourceManager cache behavior", "[ResourceManager][cache]")
 {
     SECTION("cache entry expires after all shared_ptrs are released")
     {
-        TempFile tmp;
+        TempFile tmp_file;
         ResourceManager mgr;
         {
-            auto h = mgr.get_resource(tmp.path.string());
+            auto h = mgr.get_resource(tmp_file.path.string());
             CHECK(mgr.cache_size() == 1);
         }
-        // weak_ptr истек, но cleanup еще не вызывали
         mgr.cleanup();
         CHECK(mgr.cache_size() == 0);
     }
 
     SECTION("cleanup() removes expired cache entries")
     {
-        TempFile tmp;
+        TempFile tmp_file;
         ResourceManager mgr;
         {
-            auto h = mgr.get_resource(tmp.path.string());
+            auto h = mgr.get_resource(tmp_file.path.string());
             CHECK(mgr.cache_size() == 1);
         }
         mgr.cleanup();
@@ -274,15 +272,15 @@ TEST_CASE("ResourceManager cache behavior", "[ResourceManager][cache]")
 
     SECTION("after cleanup, reopening gives a fresh handle")
     {
-        TempFile tmp("initial");
+        TempFile tmp_file("initial");
         ResourceManager mgr;
         std::shared_ptr<FileHandle> first;
         {
-            auto h = mgr.get_resource(tmp.path.string());
+            auto h = mgr.get_resource(tmp_file.path.string());
             first = h;
         }
         mgr.cleanup();
-        auto second = mgr.get_resource(tmp.path.string());
+        auto second = mgr.get_resource(tmp_file.path.string());
         CHECK(second.get() != first.get());
         CHECK(second->is_open());
     }
@@ -306,12 +304,12 @@ TEST_CASE("ResourceManager release", "[ResourceManager]")
 {
     SECTION("release removes entry from cache")
     {
-        TempFile tmp;
+        TempFile tmp_file;
         ResourceManager mgr;
-        auto h = mgr.get_resource(tmp.path.string());
+        auto h = mgr.get_resource(tmp_file.path.string());
         CHECK(mgr.cache_size() == 1);
 
-        mgr.release(tmp.path.string());
+        mgr.release(tmp_file.path.string());
         mgr.cleanup();
         CHECK(mgr.cache_size() == 0);
     }
