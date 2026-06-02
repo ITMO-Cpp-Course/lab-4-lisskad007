@@ -1,6 +1,8 @@
 #include <catch2/catch_all.hpp>
 
-#include <resource_core/resource_core.hpp>
+#include "file_handle.hpp"
+#include "resource_error.hpp"
+#include "resource_manager.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -55,20 +57,6 @@ TEST_CASE("ResourceError", "[ResourceError]")
             CHECK(std::string(ex.what()).find("something went wrong") != std::string::npos);
         }
     }
-
-    SECTION("with path includes path in message")
-    {
-        try
-        {
-            throw ResourceError("cannot open", fs::path("/tmp/missing.txt"));
-        }
-        catch (const ResourceError& ex)
-        {
-            const std::string msg(ex.what());
-            CHECK(msg.find("cannot open") != std::string::npos);
-            CHECK(msg.find("missing.txt") != std::string::npos);
-        }
-    }
 }
 
 // ─── Тесты FileHandle: Конструкторы
@@ -79,133 +67,118 @@ TEST_CASE("FileHandle constructors", "[FileHandle]")
     SECTION("default-constructed FileHandle is not open")
     {
         FileHandle h;
-        CHECK_FALSE(h.isOpen());
-        CHECK(h.path().empty());
+        CHECK_FALSE(h.is_open());
+        CHECK(h.get_filename().empty());
     }
 
     SECTION("opening an existing file succeeds")
     {
         TempFile tmp("hello");
-        FileHandle h(tmp.path);
-        CHECK(h.isOpen());
-        CHECK(h.path() == tmp.path);
+        FileHandle h(tmp.path.string(), "r");
+        CHECK(h.is_open());
+        CHECK(h.get_filename() == tmp.path.string());
     }
 
     SECTION("opening a non-existent file throws ResourceError")
     {
-        CHECK_THROWS_AS(FileHandle(fs::path("/no/such/path/file.txt")), ResourceError);
+        CHECK_THROWS_AS(FileHandle("/no/such/path/file.txt", "r"), ResourceError);
     }
 }
 
-// ─── Тесты FileHandle: close / reset
-// ──────────────────────────────────────────
+// ─── Тесты FileHandle: open / close ──────────────────────────────────────────
 
-TEST_CASE("FileHandle close operations", "[FileHandle]")
+TEST_CASE("FileHandle open/close operations", "[FileHandle]")
 {
     SECTION("closing an open handle makes it not-open")
     {
         TempFile tmp;
-        FileHandle h(tmp.path);
-        REQUIRE(h.isOpen());
+        FileHandle h;
+        h.open(tmp.path.string(), "r");
+        REQUIRE(h.is_open());
         h.close();
-        CHECK_FALSE(h.isOpen());
+        CHECK_FALSE(h.is_open());
     }
 
     SECTION("closing a not-open handle is a no-op")
     {
         FileHandle h;
         CHECK_NOTHROW(h.close());
-        CHECK_FALSE(h.isOpen());
+        CHECK_FALSE(h.is_open());
     }
 
-    SECTION("reset() closes the file")
+    SECTION("can reopen after close")
     {
-        TempFile tmp;
-        FileHandle h(tmp.path);
-        REQUIRE(h.isOpen());
-        h.reset();
-        CHECK_FALSE(h.isOpen());
+        TempFile tmp("content");
+        FileHandle h;
+        h.open(tmp.path.string(), "r");
+        REQUIRE(h.is_open());
+        h.close();
+        CHECK_FALSE(h.is_open());
+
+        h.open(tmp.path.string(), "r");
+        CHECK(h.is_open());
     }
 }
 
-// ─── Тесты FileHandle: Чтение и запись ───────────────────────────────────────
+// ─── Тесты FileHandle: чтение ───────────────────────────────────────────────
 
 TEST_CASE("FileHandle read operations", "[FileHandle]")
 {
-    SECTION("readAll returns the file content")
+    SECTION("read_line returns the first line")
     {
-        TempFile tmp("hello world");
-        FileHandle h(tmp.path);
-        CHECK(h.readAll() == "hello world");
+        TempFile tmp("hello world\nsecond line");
+        FileHandle h(tmp.path.string(), "r");
+        CHECK(h.read_line() == "hello world\n");
     }
 
-    SECTION("readAll on an empty file returns empty string")
+    SECTION("read_line on an empty file returns empty string")
     {
-        TempFile tmp;
-        FileHandle h(tmp.path);
-        CHECK(h.readAll().empty());
+        TempFile tmp("");
+        FileHandle h(tmp.path.string(), "r");
+        CHECK(h.read_line().empty());
     }
 
-    SECTION("readAll on a closed handle throws ResourceError")
+    SECTION("read_line on a closed handle throws")
     {
         FileHandle h;
-        CHECK_THROWS_AS(h.readAll(), ResourceError);
+        CHECK_THROWS_AS(h.read_line(), ResourceError);
     }
 
-    SECTION("readAll does not change the observable stream position")
+    SECTION("successive read_line calls read multiple lines")
     {
-        TempFile tmp("abcdef");
-        FileHandle h(tmp.path);
-        REQUIRE(h.readAll() == "abcdef");
-        CHECK(h.readAll() == "abcdef"); // второй вызов должен вернуть те же данные
+        TempFile tmp("line1\nline2\nline3");
+        FileHandle h(tmp.path.string(), "r");
+        CHECK(h.read_line() == "line1\n");
+        CHECK(h.read_line() == "line2\n");
+        CHECK(h.read_line() == "line3");
     }
 }
 
-TEST_CASE("FileHandle write operations", "[FileHandle]")
-{
-    SECTION("write replaces file content")
-    {
-        TempFile tmp("old content");
-        FileHandle h(tmp.path);
-        h.write("new content");
-        CHECK(h.readAll() == "new content");
-    }
-
-    SECTION("append adds to existing content")
-    {
-        TempFile tmp("hello ");
-        FileHandle h(tmp.path);
-        h.append("world");
-        CHECK(h.readAll() == "hello world");
-    }
-}
-
-// ─── Тесты режимов открытия
-// ───────────────────────────────────────────────────
+// ─── Тесты FileHandle: режимы открытия ───────────────────────────────────────
 
 TEST_CASE("FileHandle open modes", "[FileHandle][mode]")
 {
-    TempFile tmp("x");
+    TempFile tmp("test content");
 
-    SECTION("in-only")
+    SECTION("read mode 'r'")
     {
-        FileHandle h(tmp.path, std::ios::in);
-        CHECK(h.isReadable());
-        CHECK_FALSE(h.isWritable());
+        FileHandle h(tmp.path.string(), "r");
+        CHECK(h.is_open());
+        CHECK(h.read_line() == "test content");
     }
 
-    SECTION("out-only")
+    SECTION("write mode 'w' creates/truncates file")
     {
-        FileHandle h(tmp.path, std::ios::out);
-        CHECK_FALSE(h.isReadable());
-        CHECK(h.isWritable());
+        FileHandle h(tmp.path.string(), "w");
+        CHECK(h.is_open());
+        // В режиме записи нельзя читать
+        CHECK_THROWS_AS(h.read_line(), ResourceError);
     }
 
-    SECTION("in|out")
+    SECTION("append mode 'a'")
     {
-        FileHandle h(tmp.path, std::ios::in | std::ios::out);
-        CHECK(h.isReadable());
-        CHECK(h.isWritable());
+        FileHandle h(tmp.path.string(), "a");
+        CHECK(h.is_open());
     }
 }
 
@@ -215,65 +188,60 @@ TEST_CASE("FileHandle open modes", "[FileHandle][mode]")
 TEST_CASE("FileHandle move semantics", "[FileHandle][ownership]")
 {
     TempFile tmp("data");
-    FileHandle a(tmp.path);
-    REQUIRE(a.isOpen());
+    FileHandle a(tmp.path.string(), "r");
+    REQUIRE(a.is_open());
 
     FileHandle b(std::move(a));
 
-    CHECK_FALSE(a.isOpen()); // NOLINT(bugprone-use-after-move)
-    CHECK(b.isOpen());
-    CHECK(b.readAll() == "data");
+    CHECK_FALSE(a.is_open()); // После перемещения a больше не владеет ресурсом
+    CHECK(b.is_open());
+    CHECK(b.read_line() == "data");
 }
 
 // ─── Тесты ResourceManager
 // ────────────────────────────────────────────────────
 
-TEST_CASE("ResourceManager open operations", "[ResourceManager]")
+TEST_CASE("ResourceManager get_resource operations", "[ResourceManager]")
 {
-    TempFile tmp;
+    TempFile tmp("content");
 
-    SECTION("open returns a non-null handle")
+    SECTION("get_resource returns a non-null handle")
     {
         ResourceManager mgr;
-        auto h = mgr.open(tmp.path);
+        auto h = mgr.get_resource(tmp.path.string());
         CHECK(h != nullptr);
-        CHECK(h->isOpen());
+        CHECK(h->is_open());
     }
 
-    SECTION("returns the same handle for the same path and mode")
+    SECTION("returns the same handle for the same path")
     {
         ResourceManager mgr;
-        auto h1 = mgr.open(tmp.path);
-        auto h2 = mgr.open(tmp.path);
+        auto h1 = mgr.get_resource(tmp.path.string());
+        auto h2 = mgr.get_resource(tmp.path.string());
         CHECK(h1.get() == h2.get());
     }
 
     SECTION("two handles from the same manager share the resource")
     {
+        // Для FILE* невозможно проверить через запись, так как режим только для
+        // чтения Создадим файл и проверим, что оба хендла указывают на один и тот
+        // же FILE*
         TempFile tmp("original");
         ResourceManager mgr;
-        auto h1 = mgr.open(tmp.path);
-        auto h2 = mgr.open(tmp.path);
-        h1->write("changed");
-        CHECK(h2->readAll() == "changed");
+        auto h1 = mgr.get_resource(tmp.path.string());
+        auto h2 = mgr.get_resource(tmp.path.string());
+        CHECK(h1.get() == h2.get());
+        CHECK(h1->get() == h2->get()); // Один и тот же FILE*
     }
 
-    SECTION("same path with different modes gives different handles")
+    SECTION("different modes give different handles")
     {
         TempFile tmp("hello");
         ResourceManager mgr;
-        auto hr = mgr.open(tmp.path, std::ios::in);
-        auto hw = mgr.open(tmp.path, std::ios::out);
-        CHECK(hr.get() != hw.get());
-    }
-
-    SECTION("same path with same mode gives the same handle")
-    {
-        TempFile tmp;
-        ResourceManager mgr;
-        auto h1 = mgr.open(tmp.path, std::ios::in | std::ios::out);
-        auto h2 = mgr.open(tmp.path, std::ios::in | std::ios::out);
-        CHECK(h1.get() == h2.get());
+        auto h1 = mgr.get_resource(tmp.path.string(), "r");
+        auto h2 = mgr.get_resource(tmp.path.string(), "w");
+        // В вашей реализации режим влияет на ключ, поэтому хендлы разные
+        CHECK(h1.get() != h2.get());
     }
 }
 
@@ -284,37 +252,39 @@ TEST_CASE("ResourceManager cache behavior", "[ResourceManager][cache]")
         TempFile tmp;
         ResourceManager mgr;
         {
-            auto h = mgr.open(tmp.path);
-            CHECK(mgr.liveCacheSize() == 1);
+            auto h = mgr.get_resource(tmp.path.string());
+            CHECK(mgr.cache_size() == 1);
         }
-        CHECK(mgr.liveCacheSize() == 0);
-        CHECK(mgr.cacheSize() == 1);
+        // weak_ptr истек, но cleanup еще не вызывали
+        mgr.cleanup();
+        CHECK(mgr.cache_size() == 0);
     }
 
-    SECTION("purge() removes expired cache entries")
+    SECTION("cleanup() removes expired cache entries")
     {
         TempFile tmp;
         ResourceManager mgr;
         {
-            auto h = mgr.open(tmp.path);
+            auto h = mgr.get_resource(tmp.path.string());
+            CHECK(mgr.cache_size() == 1);
         }
-        mgr.purge();
-        CHECK(mgr.cacheSize() == 0);
+        mgr.cleanup();
+        CHECK(mgr.cache_size() == 0);
     }
 
-    SECTION("after eviction, reopening gives a fresh handle")
+    SECTION("after cleanup, reopening gives a fresh handle")
     {
         TempFile tmp("initial");
         ResourceManager mgr;
         std::shared_ptr<FileHandle> first;
         {
-            auto h = mgr.open(tmp.path);
+            auto h = mgr.get_resource(tmp.path.string());
             first = h;
         }
-        first.reset();
-        auto second = mgr.open(tmp.path);
+        mgr.cleanup();
+        auto second = mgr.get_resource(tmp.path.string());
         CHECK(second.get() != first.get());
-        CHECK(second->isOpen());
+        CHECK(second->is_open());
     }
 
     SECTION("multiple files are cached independently")
@@ -322,53 +292,27 @@ TEST_CASE("ResourceManager cache behavior", "[ResourceManager][cache]")
         TempFile t1("aaa");
         TempFile t2("bbb");
         ResourceManager mgr;
-        auto h1 = mgr.open(t1.path);
-        auto h2 = mgr.open(t2.path);
+        auto h1 = mgr.get_resource(t1.path.string());
+        auto h2 = mgr.get_resource(t2.path.string());
         CHECK(h1.get() != h2.get());
-        CHECK(mgr.liveCacheSize() == 2);
-    }
-
-    SECTION("liveCacheSize counts only non-expired entries")
-    {
-        TempFile t1, t2, t3;
-        ResourceManager mgr;
-        auto h1 = mgr.open(t1.path);
-        auto h2 = mgr.open(t2.path);
-        {
-            auto h3 = mgr.open(t3.path);
-            CHECK(mgr.liveCacheSize() == 3);
-        }
-        CHECK(mgr.liveCacheSize() == 2);
-        CHECK(mgr.cacheSize() == 3);
+        CHECK(mgr.cache_size() == 2);
     }
 }
 
-// ─── Тесты ResourceKey
-// ────────────────────────────────────────────────────────
+// ─── Тесты release метода
+// ─────────────────────────────────────────────────────
 
-TEST_CASE("ResourceKey equality and hash", "[ResourceKey]")
+TEST_CASE("ResourceManager release", "[ResourceManager]")
 {
-    TempFile tmp;
-    const auto canonical = std::filesystem::weakly_canonical(tmp.path);
-
-    SECTION("equality is consistent")
+    SECTION("release removes entry from cache")
     {
-        const ResourceKey k1{canonical, std::ios::in};
-        const ResourceKey k2{canonical, std::ios::in};
-        const ResourceKey k3{canonical, std::ios::out};
+        TempFile tmp;
+        ResourceManager mgr;
+        auto h = mgr.get_resource(tmp.path.string());
+        CHECK(mgr.cache_size() == 1);
 
-        CHECK(k1 == k2);
-        CHECK_FALSE(k1 == k3);
-    }
-
-    SECTION("hash is consistent")
-    {
-        const ResourceKey k1{canonical, std::ios::in};
-        const ResourceKey k2{canonical, std::ios::in};
-        const ResourceKey k3{canonical, std::ios::out};
-
-        const std::hash<ResourceKey> h;
-        CHECK(h(k1) == h(k2));
-        CHECK(h(k1) != h(k3));
+        mgr.release(tmp.path.string());
+        mgr.cleanup();
+        CHECK(mgr.cache_size() == 0);
     }
 }
